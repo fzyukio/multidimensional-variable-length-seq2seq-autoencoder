@@ -50,7 +50,7 @@ class NDS2SAEFactory:
                 namelist = zip_file.namelist()
                 if 'meta.json' in namelist:
                     meta = json.loads(zip_file.read('meta.json'))
-                    for k, v in meta.items():
+                    for k, v in list(meta.items()):
                         setattr(self, k, v)
 
         if self.uuid_code is None:
@@ -130,7 +130,7 @@ class _NDS2SAE:
 
     def cleanup(self):
         if os.path.isdir(self.tmp_folder):
-            print('Cleaned up temp folder {}'.format(self.tmp_folder))
+            print(('Cleaned up temp folder {}'.format(self.tmp_folder)))
             shutil.rmtree(self.tmp_folder)
 
     def copy_saved_to_zip(self):
@@ -337,7 +337,7 @@ class _NDS2SAE:
             true_cost = np.mean(cross_entropy)
 
             assert np.allclose(true_cost, cost), 'Cost = {}, tru cost = {}'.format(cost, true_cost)
-            print('Lost = {}'.format(cost))
+            print(('Lost = {}'.format(cost)))
 
     def train(self, training_gen, valid_gen, n_iterations=1500, batch_size=50, display_step=1):
         saver = tf.train.Saver(max_to_keep=1)
@@ -386,8 +386,8 @@ class _NDS2SAE:
                     }
                     validation_loss = sess.run(self.cost, feed_dict)
 
-                    print('Epoch {:>3}/{} - Loss: {:>6.3f}  - Validation loss: {:>6.3f}'
-                          .format(iteration, n_iterations, loss, validation_loss))
+                    print(('Epoch {:>3}/{} - Loss: {:>6.3f}  - Validation loss: {:>6.3f}'
+                          .format(iteration, n_iterations, loss, validation_loss)))
 
                     saver.save(sess, self.saved_session_name, global_step=self.global_step)
                     self.copy_saved_to_zip()

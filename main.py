@@ -24,8 +24,8 @@ if __name__ == '__main__':
 
 
     def generate_train_samples(batch_size=10):
-        start_time_idx = np.random.choice(range(total_start_points), batch_size)
-        sequence_lens = np.random.choice(range(min_seq_len, max_seq_len + 1), batch_size).astype(np.int32)
+        start_time_idx = np.random.choice(list(range(total_start_points)), batch_size)
+        sequence_lens = np.random.choice(list(range(min_seq_len, max_seq_len + 1)), batch_size).astype(np.int32)
 
         time_axis = [x[t:(t + seq_len)] for t, seq_len in zip(start_time_idx, sequence_lens)]
         input = []
@@ -51,9 +51,9 @@ if __name__ == '__main__':
         # adjust_length(predicted, test_seq_len)
 
         plt.title("Input sequence, predicted and true output sequences")
-        i = plt.plot(range(seq_len), test_seq[0], 'o', label='true input sequence')
-        p = plt.plot(range(seq_len, seq_len + pre_len), predicted[0], 'ro', label='predicted outputs')
-        t = plt.plot(range(seq_len, seq_len + seq_len), test_res[0], 'co', alpha=0.6, label='true outputs')
+        i = plt.plot(list(range(seq_len)), test_seq[0], 'o', label='true input sequence')
+        p = plt.plot(list(range(seq_len, seq_len + pre_len)), predicted[0], 'ro', label='predicted outputs')
+        t = plt.plot(list(range(seq_len, seq_len + seq_len)), test_res[0], 'co', alpha=0.6, label='true outputs')
         plt.legend(handles=[i[0], p[0], t[0]], loc='upper left')
         plt.show()
 
@@ -82,11 +82,10 @@ if __name__ == '__main__':
     # show_sample()
 
     factory = NDS2SAEFactory()
-    factory.max_seq_len = max_seq_len
     factory.input_dim = n_inputs
     factory.output_dim = n_outputs
     factory.layer_sizes = [50, 30]
-    encoder = factory.build('toy2.zip')
+    encoder = factory.build('toy.zip')
 
     # If toy.zip exists, the encoder will continue the training
     # Otherwise it'll train a new model and save to toy.zip every {display_step}

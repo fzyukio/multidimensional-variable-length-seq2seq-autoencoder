@@ -2,3 +2,6 @@
 .venv
 __pycache__
 toy.zip
+.ipynb_checkpoints/
+dist
+seq2seq.egg-info/
