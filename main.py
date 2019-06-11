@@ -20,12 +20,6 @@ if __name__ == '__main__':
     def generate_samples(time):
         x1 = 2 * np.sin(time)
         x2 = 2 * np.cos(time)
-
-        padding_len = max_seq_len - len(time)
-        padding = np.full((padding_len,), pad_token, dtype=np.float32)
-        x1 = np.concatenate((x1, padding)).astype(np.float32)
-        x2 = np.concatenate((x2, padding)).astype(np.float32)
-
         return x1, x2
 
 
@@ -38,40 +32,38 @@ if __name__ == '__main__':
         output = []
         for t in time_axis:
             sin, cos = generate_samples(t)
-            input.append([sin, cos])
-            output.append([sin + cos])
+            input.append(np.array([sin, cos]).transpose(1, 0))
+            output.append(np.array([sin + cos]).transpose(1, 0))
 
-        input = np.array(input).transpose(0, 2, 1)
-        output = np.array(output).transpose(0, 2, 1)
-
-        mask = np.zeros((batch_size, max_seq_len), dtype=np.float32)
-        for i in range(batch_size):
-            sequence_len = sequence_lens[i]
-            mask[i, :sequence_len] = 1
-
-        return input, output, sequence_lens, mask
+        return input, output
 
     def adjust_length(seqs, lens):
         for seg, len in zip(seqs, lens):
             seg[len:] = 0
 
     def show_test():
-        test_seq, test_res, test_seq_len, test_mask = generate_train_samples(batch_size=1)
-        predicted = encoder.predict(test_seq, test_seq_len, test_mask)
+        test_seq, test_res = generate_train_samples(batch_size=50)
+        predicted = encoder.predict(test_seq)
+        
+        seq_len = len(test_seq[0])
+        pre_len = len(predicted[0])
 
-        adjust_length(predicted, test_seq_len)
+        # adjust_length(predicted, test_seq_len)
 
         plt.title("Input sequence, predicted and true output sequences")
-        i = plt.plot(range(max_seq_len), test_seq[0], 'o', label='true input sequence')
-        p = plt.plot(range(max_seq_len, max_seq_len + max_seq_len), predicted[0], 'ro', label='predicted outputs')
-        t = plt.plot(range(max_seq_len, max_seq_len + max_seq_len), test_res[0], 'co', alpha=0.6, label='true outputs')
+        i = plt.plot(range(seq_len), test_seq[0], 'o', label='true input sequence')
+        p = plt.plot(range(seq_len, seq_len + pre_len), predicted[0], 'ro', label='predicted outputs')
+        t = plt.plot(range(seq_len, seq_len + seq_len), test_res[0], 'co', alpha=0.6, label='true outputs')
         plt.legend(handles=[i[0], p[0], t[0]], loc='upper left')
         plt.show()
 
+    def debug():
+        test_seq, test_res = generate_train_samples(batch_size=100)
+        encoder.debug(test_seq, test_res)
 
     def run_encode():
-        test_seq, test_res, test_seq_len, test_mask = generate_train_samples(batch_size=1)
-        encoded = encoder.encode(test_seq, test_seq_len, test_mask)
+        test_seq, test_res = generate_train_samples(batch_size=1)
+        encoded = encoder.encode(test_seq)
         print(encoded)
 
     # def show_sample():
@@ -93,18 +85,20 @@ if __name__ == '__main__':
     factory.max_seq_len = max_seq_len
     factory.input_dim = n_inputs
     factory.output_dim = n_outputs
-    factory.layer_sizes = [100]
-    encoder = factory.build('toy1.zip')
+    factory.layer_sizes = [50, 30]
+    encoder = factory.build('toy2.zip')
 
     # If toy.zip exists, the encoder will continue the training
     # Otherwise it'll train a new model and save to toy.zip every {display_step}
-    encoder.train(generate_train_samples, n_iterations=1000, batch_size=100, display_step=100)
+    encoder.train(generate_train_samples, generate_train_samples, n_iterations=3000, batch_size=100, display_step=100)
 
     # Run this to use the trained autoencoder to encode and decode a randomly generated sequence
     # And display them
     show_test()
+    # debug()
 
     # This will print out the encoded (hidden layers) value
-    run_encode()
+    # run_encode()
 
+    # Not necessary if this is the end of the python program
     encoder.cleanup()
