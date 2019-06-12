@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="seq2seq",
-    version="0.0.1",
+    version="0.0.2",
     author="Yukio Fukuzawa",
     author_email="y.fukuzawa@massey.ac.nz",
     description="Real valued sequence to sequence autoencoder",

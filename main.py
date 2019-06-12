@@ -82,6 +82,8 @@ if __name__ == '__main__':
     # show_sample()
 
     factory = NDS2SAEFactory()
+    factory.starter_lr = 0.02
+    factory.lr_decay_rate = 0.001
     factory.input_dim = n_inputs
     factory.output_dim = n_outputs
     factory.layer_sizes = [50, 30]

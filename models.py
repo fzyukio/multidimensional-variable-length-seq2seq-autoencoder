@@ -34,7 +34,9 @@ class NDS2SAEFactory:
         self.layer_sizes = []
         self.output_dim = 1
         self.input_dim = 1
-        self.learning_rate = 0.01
+        self.starter_lr = 0.01
+        self.lr_decay_rate = 0.01
+        self.lr_decay_steps = None
         self.tmp_folder = None
         self.uuid_code = None
         self.stop_pad_length = 5
@@ -82,11 +84,13 @@ class NDS2SAEFactory:
 class _NDS2SAE:
     def __init__(self, factory):
         self.global_step = tf.Variable(0, name='global_step', trainable=False)
-        self.learning_rate = factory.learning_rate
         self.input_dim = factory.input_dim
         self.output_dim = factory.output_dim
         self.layer_sizes = factory.layer_sizes
-        self.learning_rate = factory.learning_rate
+        self.starter_lr = factory.starter_lr
+        self.lr_decay_rate = factory.lr_decay_rate
+        self.lr_decay_steps = factory.lr_decay_steps
+
         self.tmp_folder = factory.tmp_folder
         self.uuid_code = factory.uuid_code
         self.latent_dims = sum(self.layer_sizes)
@@ -121,6 +125,7 @@ class _NDS2SAE:
         self.x_stopping = None
         self.y_stopping = None
         self.predictions = None
+        self.learning_rate = None
 
         def cleanup(*args):
             self.cleanup()
@@ -201,7 +206,7 @@ class _NDS2SAE:
             training_decoder = BasicDecoder(dec_cell, training_helper, self.enc_state, projection_layer)
 
             # Perform dynamic decoding using the decoder
-            self.training_decoder_output \
+            self.training_decoder_output\
                 = dynamic_decode(training_decoder,
                                  # True because we're using variable length sequences, which have finish points
                                  impute_finished=True,
@@ -237,23 +242,6 @@ class _NDS2SAE:
                 # True because we're using variable length sequences, which have finish points
                 impute_finished=True,
                 maximum_iterations=max_target_sequence_length_padded)[0]
-
-        self.predictions = self.training_decoder_output.rnn_output
-        diff = self.output_data - self.predictions
-        diff = tf.reduce_sum(tf.square(diff), 2)
-        diff *= self.mask
-
-        cross_entropy = tf.reduce_sum(diff, 1)
-        cross_entropy /= tf.cast(self.target_sequence_length, dtypes.float32)  # tf.reduce_sum(self.mask, 1)
-        self.cost = tf.reduce_mean(cross_entropy)
-
-        # Optimizer
-        optimizer = tf.train.AdamOptimizer(self.learning_rate)
-
-        # Gradient Clipping
-        gradients = optimizer.compute_gradients(self.cost)
-        capped_gradients = [(tf.clip_by_value(grad, -5., 5.), var) for grad, var in gradients if grad is not None]
-        self.train_op = optimizer.apply_gradients(capped_gradients, global_step=self.global_step)
 
     def proprocess_samples(self, xs, ys=None):
         batch_size = len(xs)
@@ -291,6 +279,8 @@ class _NDS2SAE:
         return padded_xs, source_sequence_lens, target_sequence_lens
 
     def debug(self, xs, ys):
+        self.construct_loss_function()
+
         saver = tf.train.Saver(max_to_keep=1)
         batch_size = len(xs)
         with tf.Session() as sess:
@@ -299,7 +289,7 @@ class _NDS2SAE:
             if not self.build_anew:
                 saver.restore(sess, tf.train.latest_checkpoint(self.tmp_folder))
 
-            X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask \
+            X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask\
                 = self.proprocess_samples(xs, ys)
 
             actual_start_tokens = np.full((batch_size, self.output_dim), self.go_token, dtype=np.float32)
@@ -339,9 +329,44 @@ class _NDS2SAE:
             assert np.allclose(true_cost, cost), 'Cost = {}, tru cost = {}'.format(cost, true_cost)
             print(('Lost = {}'.format(cost)))
 
+    def construct_loss_function(self, n_iterations=1500):
+        if self.learning_rate is None:
+            # Staircase = True DOES NOT WORK
+            if self.lr_decay_steps is None:
+                self.lr_decay_steps = n_iterations * 2
+            self.learning_rate = tf.train.exponential_decay(self.starter_lr, self.global_step, self.lr_decay_steps,
+                                                            self.lr_decay_rate, staircase=False)
+
+            self.predictions = self.training_decoder_output.rnn_output
+            diff = self.output_data - self.predictions
+            diff = tf.reduce_sum(tf.square(diff), 2)
+            diff *= self.mask
+
+            cross_entropy = tf.reduce_sum(diff, 1)
+            cross_entropy /= tf.cast(self.target_sequence_length, dtypes.float32)  # tf.reduce_sum(self.mask, 1)
+            self.cost = tf.reduce_mean(cross_entropy)
+
+            # Optimizer
+            optimizer = tf.train.AdamOptimizer(self.learning_rate)
+
+            # Gradient Clipping
+            gradients = optimizer.compute_gradients(self.cost)
+            capped_gradients = [(tf.clip_by_value(grad, -5., 5.), var) for grad, var in gradients if grad is not None]
+            self.train_op = optimizer.apply_gradients(capped_gradients, global_step=self.global_step)
+
     def train(self, training_gen, valid_gen, n_iterations=1500, batch_size=50, display_step=1):
+        self.construct_loss_function(n_iterations)
+
+        with tf.name_scope('summaries'):
+            tf.summary.scalar('learning_rate', self.learning_rate)
+            tf.summary.scalar('cost', self.cost)
+
         saver = tf.train.Saver(max_to_keep=1)
         with tf.Session() as sess:
+            # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
+            summary_merged = tf.summary.merge_all()
+            train_writer = tf.summary.FileWriter(self.tmp_folder + '/train')
+            test_writer = tf.summary.FileWriter(self.tmp_folder + '/test')
             init = tf.global_variables_initializer()
             init.run()
             if not self.build_anew:
@@ -350,7 +375,7 @@ class _NDS2SAE:
             for iteration in range(current_iteration, n_iterations):
 
                 xs, ys = training_gen(batch_size)
-                X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask \
+                X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask\
                     = self.proprocess_samples(xs, ys)
 
                 actual_start_tokens = np.full((batch_size, self.output_dim), self.go_token, dtype=np.float32)
@@ -366,12 +391,13 @@ class _NDS2SAE:
                     self.target_sequence_length: target_sequence_lens,
                     self.source_sequence_length: source_sequence_lens
                 }
-                _, loss = sess.run([self.train_op, self.cost], feed_dict)
+                _, loss, summary = sess.run([self.train_op, self.cost, summary_merged], feed_dict)
+                train_writer.add_summary(summary, iteration)
 
                 # Debug message updating us on the status of the training
                 if iteration % display_step == 0 or iteration == n_iterations - 1:
                     xs, ys = valid_gen(batch_size)
-                    X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask \
+                    X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask\
                         = self.proprocess_samples(xs, ys)
 
                     # Calculate validation cost
@@ -384,10 +410,12 @@ class _NDS2SAE:
                         self.target_sequence_length: target_sequence_lens,
                         self.source_sequence_length: source_sequence_lens
                     }
-                    validation_loss = sess.run(self.cost, feed_dict)
+                    validation_loss, summary, learning_rate = sess.run([self.cost, summary_merged, self.learning_rate],
+                                                                       feed_dict)
+                    test_writer.add_summary(summary, iteration)
 
-                    print(('Epoch {:>3}/{} - Loss: {:>6.3f}  - Validation loss: {:>6.3f}'
-                          .format(iteration, n_iterations, loss, validation_loss)))
+                    print(('Epoch {:>3}/{} - Loss: {:>6.3f}  - Validation loss: {:>6.3f} - Learning rate: {:>8.7f}'.
+                           format(iteration, n_iterations, loss, validation_loss, learning_rate)))
 
                     saver.save(sess, self.saved_session_name, global_step=self.global_step)
                     self.copy_saved_to_zip()
@@ -410,11 +438,12 @@ class _NDS2SAE:
         X_batch, source_sequence_lens, target_sequence_lens = self.proprocess_samples(test_seq)
 
         actual_start_tokens = np.full((batch_size, self.output_dim), self.go_token, dtype=np.float32)
-        feed_dict = {self.input_data: X_batch,
-                     self.start_tokens: actual_start_tokens,
-                     self.target_sequence_length: target_sequence_lens,
-                     self.source_sequence_length: source_sequence_lens
-                     }
+        feed_dict = {
+            self.input_data: X_batch,
+            self.start_tokens: actual_start_tokens,
+            self.target_sequence_length: target_sequence_lens,
+            self.source_sequence_length: source_sequence_lens
+        }
         if session is None:
             saver = tf.train.Saver()
             init = tf.global_variables_initializer()
@@ -440,4 +469,4 @@ class _NDS2SAE:
 
     def encode(self, test_seq, session=None):
         states = self._predict_or_encode('encode', test_seq, session)
-        return np.concatenate(states, axis=1).reshape(-1)
+        return np.concatenate(states, axis=1)
