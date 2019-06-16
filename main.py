@@ -1,7 +1,19 @@
 import numpy as np
+import sys
 from matplotlib import pyplot as plt
 
 from models import NDS2SAEFactory
+
+PY3 = sys.version_info[0] == 3
+if PY3:
+    import builtins
+else:
+    import __builtin__ as builtins
+
+try:
+    builtins.profile
+except AttributeError:
+    builtins.profile = lambda x: x
 
 if __name__ == '__main__':
     max_seq_len = 40
@@ -16,6 +28,7 @@ if __name__ == '__main__':
     total_start_points = len_x - max_seq_len
 
     pad_token = 0
+
 
     def generate_samples(time):
         x1 = 2 * np.sin(time)
@@ -37,14 +50,16 @@ if __name__ == '__main__':
 
         return input, output
 
+
     def adjust_length(seqs, lens):
         for seg, len in zip(seqs, lens):
             seg[len:] = 0
 
+
     def show_test():
         test_seq, test_res = generate_train_samples(batch_size=50)
         predicted = encoder.predict(test_seq)
-        
+
         seq_len = len(test_seq[0])
         pre_len = len(predicted[0])
 
@@ -57,14 +72,17 @@ if __name__ == '__main__':
         plt.legend(handles=[i[0], p[0], t[0]], loc='upper left')
         plt.show()
 
+
     def debug():
         test_seq, test_res = generate_train_samples(batch_size=100)
         encoder.debug(test_seq, test_res)
+
 
     def run_encode():
         test_seq, test_res = generate_train_samples(batch_size=1)
         encoded = encoder.encode(test_seq)
         print(encoded)
+
 
     # def show_sample():
     #     test_seq, test_res, test_seq_len, test_mask = generate_train_samples(batch_size=1)
@@ -81,13 +99,24 @@ if __name__ == '__main__':
     #
     # show_sample()
 
+    starter_learning_rate = 0.02
+    finish_learning_rate = 0.00001
+    decay_rate = finish_learning_rate / starter_learning_rate
+    decay_steps = 8000
+
+    def learning_rate_func(global_step):
+        decay_learning_rate = starter_learning_rate * pow(decay_rate, (global_step / decay_steps))
+        return decay_learning_rate
+
     factory = NDS2SAEFactory()
-    factory.starter_lr = 0.02
-    factory.lr_decay_rate = 0.001
+    # factory.starter_lr = 0.02
+    # factory.lr_decay_rate = 0.001
+    # factory.lr_decay_steps = 2000
+    factory.learning_rate_func = learning_rate_func
     factory.input_dim = n_inputs
     factory.output_dim = n_outputs
     factory.layer_sizes = [50, 30]
-    encoder = factory.build('toy.zip')
+    encoder = factory.build('toy6.zip')
 
     # If toy.zip exists, the encoder will continue the training
     # Otherwise it'll train a new model and save to toy.zip every {display_step}

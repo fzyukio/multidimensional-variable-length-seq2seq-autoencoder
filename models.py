@@ -34,9 +34,8 @@ class NDS2SAEFactory:
         self.layer_sizes = []
         self.output_dim = 1
         self.input_dim = 1
-        self.starter_lr = 0.01
-        self.lr_decay_rate = 0.01
-        self.lr_decay_steps = None
+        self.learning_rate = None
+        self.learning_rate_func = None
         self.tmp_folder = None
         self.uuid_code = None
         self.stop_pad_length = 5
@@ -53,7 +52,8 @@ class NDS2SAEFactory:
                 if 'meta.json' in namelist:
                     meta = json.loads(zip_file.read('meta.json'))
                     for k, v in list(meta.items()):
-                        setattr(self, k, v)
+                        if not callable(v):
+                            setattr(self, k, v)
 
         if self.uuid_code is None:
             self.uuid_code = uuid4().hex
@@ -69,7 +69,7 @@ class NDS2SAEFactory:
             has_saved_checkpoint = extract_saved(self.tmp_folder, save_to)
             build_anew = not has_saved_checkpoint
 
-        params = vars(self)
+        params = {v: k for v, k in vars(self).items() if not callable(k)}
         meta_file = os.path.join(self.tmp_folder, 'meta.json')
         with open(meta_file, 'w') as f:
             json.dump(params, f)
@@ -87,9 +87,12 @@ class _NDS2SAE:
         self.input_dim = factory.input_dim
         self.output_dim = factory.output_dim
         self.layer_sizes = factory.layer_sizes
-        self.starter_lr = factory.starter_lr
-        self.lr_decay_rate = factory.lr_decay_rate
-        self.lr_decay_steps = factory.lr_decay_steps
+
+        if (factory.learning_rate is None) == (factory.learning_rate_func is None):
+            raise Exception('Must provide either learning_rate or learning_rate_func, but not both')
+
+        self.fixed_learning_rate = factory.learning_rate
+        self.learning_rate_func = factory.learning_rate_func
 
         self.tmp_folder = factory.tmp_folder
         self.uuid_code = factory.uuid_code
@@ -167,6 +170,12 @@ class _NDS2SAE:
         self.source_sequence_length = tf.placeholder(tf.int32, (None,), name='source_sequence_length')
         self.x_stopping = np.full((self.stop_pad_length, self.input_dim), self.stop_pad_token, dtype=np.float32)
         self.y_stopping = np.full((self.stop_pad_length, self.output_dim), self.stop_pad_token, dtype=np.float32)
+        self.learning_rate = tf.placeholder(tf.float32)
+
+        if self.learning_rate_func is None:
+            def get_lr(*args, **kwargs):
+                return self.fixed_learning_rate
+            self.learning_rate_func = get_lr
 
         enc_cell = make_cell(self.layer_sizes, self.keep_prob)
 
@@ -329,14 +338,8 @@ class _NDS2SAE:
             assert np.allclose(true_cost, cost), 'Cost = {}, tru cost = {}'.format(cost, true_cost)
             print(('Lost = {}'.format(cost)))
 
-    def construct_loss_function(self, n_iterations=1500):
-        if self.learning_rate is None:
-            # Staircase = True DOES NOT WORK
-            if self.lr_decay_steps is None:
-                self.lr_decay_steps = n_iterations * 2
-            self.learning_rate = tf.train.exponential_decay(self.starter_lr, self.global_step, self.lr_decay_steps,
-                                                            self.lr_decay_rate, staircase=False)
-
+    def construct_loss_function(self):
+        if self.train_op is None:
             self.predictions = self.training_decoder_output.rnn_output
             diff = self.output_data - self.predictions
             diff = tf.reduce_sum(tf.square(diff), 2)
@@ -354,8 +357,9 @@ class _NDS2SAE:
             capped_gradients = [(tf.clip_by_value(grad, -5., 5.), var) for grad, var in gradients if grad is not None]
             self.train_op = optimizer.apply_gradients(capped_gradients, global_step=self.global_step)
 
+    # @profile
     def train(self, training_gen, valid_gen, n_iterations=1500, batch_size=50, display_step=1):
-        self.construct_loss_function(n_iterations)
+        self.construct_loss_function()
 
         with tf.name_scope('summaries'):
             tf.summary.scalar('learning_rate', self.learning_rate)
@@ -380,9 +384,11 @@ class _NDS2SAE:
 
                 actual_start_tokens = np.full((batch_size, self.output_dim), self.go_token, dtype=np.float32)
                 actual_go_tokens = np.full((batch_size, 1, self.output_dim), self.go_token, dtype=np.float32)
+                this_learning_rate = self.learning_rate_func(global_step=iteration)
 
                 # Training step
                 feed_dict = {
+                    self.learning_rate: this_learning_rate,
                     self.input_data: X_batch,
                     self.output_data: y_batch,
                     self.mask: len_mask,
@@ -402,6 +408,7 @@ class _NDS2SAE:
 
                     # Calculate validation cost
                     feed_dict = {
+                        self.learning_rate: this_learning_rate,
                         self.input_data: X_batch,
                         self.output_data: y_batch,
                         self.mask: len_mask,
@@ -410,12 +417,11 @@ class _NDS2SAE:
                         self.target_sequence_length: target_sequence_lens,
                         self.source_sequence_length: source_sequence_lens
                     }
-                    validation_loss, summary, learning_rate = sess.run([self.cost, summary_merged, self.learning_rate],
-                                                                       feed_dict)
+                    validation_loss, summary = sess.run([self.cost, summary_merged], feed_dict)
                     test_writer.add_summary(summary, iteration)
 
                     print(('Epoch {:>3}/{} - Loss: {:>6.3f}  - Validation loss: {:>6.3f} - Learning rate: {:>8.7f}'.
-                           format(iteration, n_iterations, loss, validation_loss, learning_rate)))
+                           format(iteration, n_iterations, loss, validation_loss, this_learning_rate)))
 
                     saver.save(sess, self.saved_session_name, global_step=self.global_step)
                     self.copy_saved_to_zip()
