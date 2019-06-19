@@ -99,33 +99,30 @@ if __name__ == '__main__':
     #
     # show_sample()
 
-    starter_learning_rate = 0.02
-    finish_learning_rate = 0.00001
-    decay_rate = finish_learning_rate / starter_learning_rate
-    decay_steps = 8000
-
-    def learning_rate_func(global_step):
-        decay_learning_rate = starter_learning_rate * pow(decay_rate, (global_step / decay_steps))
-        return decay_learning_rate
+    n_iterations = 4000
 
     factory = NDS2SAEFactory()
-    # factory.starter_lr = 0.02
-    # factory.lr_decay_rate = 0.001
-    # factory.lr_decay_steps = 2000
-    factory.learning_rate_func = learning_rate_func
+    factory.lrtype = 'expdecay'
+    factory.lrargs = dict(start_lr=0.02, finish_lr=0.00001, decay_steps=n_iterations)
+    # factory.lrtype = 'constant'
+    # factory.lrargs = dict(lr=0.001)
+    # factory.keep_prob = 0.7
     factory.input_dim = n_inputs
     factory.output_dim = n_outputs
     factory.layer_sizes = [50, 30]
-    encoder = factory.build('toy6.zip')
+    encoder = factory.build('toy.zip')
 
     # If toy.zip exists, the encoder will continue the training
     # Otherwise it'll train a new model and save to toy.zip every {display_step}
-    encoder.train(generate_train_samples, generate_train_samples, n_iterations=3000, batch_size=100, display_step=100)
+    encoder.train(generate_train_samples, generate_train_samples, n_iterations=n_iterations,
+                  batch_size=100, display_step=100, save_step=1000)
+
+    # Turn on for debug.
+    # debug()
 
     # Run this to use the trained autoencoder to encode and decode a randomly generated sequence
     # And display them
     show_test()
-    # debug()
 
     # This will print out the encoded (hidden layers) value
     # run_encode()
