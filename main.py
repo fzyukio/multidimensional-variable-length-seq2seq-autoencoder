@@ -1,3 +1,4 @@
+import tensorflow as tf
 import numpy as np
 import sys
 from matplotlib import pyplot as plt
@@ -48,7 +49,7 @@ if __name__ == '__main__':
             input.append(np.array([sin, cos]).transpose(1, 0))
             output.append(np.array([sin + cos]).transpose(1, 0))
 
-        return input, output
+        return input, output, True
 
 
     def adjust_length(seqs, lens):
@@ -57,7 +58,7 @@ if __name__ == '__main__':
 
 
     def show_test():
-        test_seq, test_res = generate_train_samples(batch_size=50)
+        test_seq, test_res, _ = generate_train_samples(batch_size=50)
         predicted = encoder.predict(test_seq)
 
         seq_len = len(test_seq[0])
@@ -74,13 +75,18 @@ if __name__ == '__main__':
 
 
     def debug():
-        test_seq, test_res = generate_train_samples(batch_size=100)
+        test_seq, test_res, _ = generate_train_samples(batch_size=100)
         encoder.debug(test_seq, test_res)
 
 
     def run_encode():
-        test_seq, test_res = generate_train_samples(batch_size=1)
-        encoded = encoder.encode(test_seq)
+        init = tf.global_variables_initializer()
+        session = tf.Session()
+        session.run(init)
+
+        test_seq, test_res, _ = generate_train_samples(batch_size=1)
+        encoded = encoder.encode(test_seq, session, kernel_only=True)
+        session.close()
         print(encoded)
 
 
@@ -114,18 +120,18 @@ if __name__ == '__main__':
 
     # If toy.zip exists, the encoder will continue the training
     # Otherwise it'll train a new model and save to toy.zip every {display_step}
-    encoder.train(generate_train_samples, generate_train_samples, n_iterations=n_iterations,
-                  batch_size=100, display_step=100, save_step=1000)
+    # encoder.train(generate_train_samples, generate_train_samples, n_iterations=n_iterations,
+    #               batch_size=100, display_step=100, save_step=1000)
 
     # Turn on for debug.
     # debug()
 
     # Run this to use the trained autoencoder to encode and decode a randomly generated sequence
     # And display them
-    show_test()
+    # show_test()
 
     # This will print out the encoded (hidden layers) value
-    # run_encode()
+    run_encode()
 
     # Not necessary if this is the end of the python program
     encoder.cleanup()

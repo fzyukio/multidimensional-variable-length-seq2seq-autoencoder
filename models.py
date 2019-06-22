@@ -50,6 +50,7 @@ class NDS2SAEFactory:
         self.symmetric = True
         self.lrtype = 'constant'
         self.lrargs = dict(lr=0.001)
+        self.write_summary = False
 
     def load(self, filename):
         self.load_from = filename
@@ -65,7 +66,7 @@ class NDS2SAEFactory:
             raise Exception('File {} does not exist'.format(filename))
 
     def build(self, save_to=None):
-        if save_to is not None:
+        if save_to is None:
             if hasattr(self, 'load_from'):
                 save_to = self.load_from
             else:
@@ -118,6 +119,7 @@ class _NDS2SAE:
         self.stop_pad_length = factory.stop_pad_length
         self.keep_prob = factory.keep_prob
         self.symmetric = factory.symmetric
+        self.write_summary = factory.write_summary
 
         self.input_data = None
         self.output_data = None
@@ -136,6 +138,7 @@ class _NDS2SAE:
         self.build_anew = True
         self.train_op = None
         self.enc_state = None
+        self.enc_state_centre = None
         self.go_tokens = None
         self.training_decoder_output = None
         self.cost = None
@@ -204,6 +207,8 @@ class _NDS2SAE:
 
         _, self.enc_state = dynamic_rnn(enc_cell, self.input_data, sequence_length=self.source_sequence_length_padded,
                                         dtype=tf.float32, time_major=False, swap_memory=True)
+        self.enc_state_centre = self.enc_state[-1]
+
         if self.symmetric:
             self.enc_state = self.enc_state[::-1]
             dec_cell = make_cell(self.layer_sizes[::-1], self.keep_prob)
@@ -339,9 +344,6 @@ class _NDS2SAE:
                 })
             cost = evaled[1]
             predictions = evaled[2]
-            max_target_sequence_length = evaled[3]
-
-            assert max_target_sequence_length == max(target_sequence_lens)
 
             diff = y_batch - predictions
             diff[np.isinf(diff)] = 0
@@ -349,7 +351,7 @@ class _NDS2SAE:
             diff *= len_mask
 
             cross_entropy = np.sum(diff, 1)
-            cross_entropy /= target_sequence_lens
+            cross_entropy /= (target_sequence_lens + self.stop_pad_length)
             true_cost = np.mean(cross_entropy)
 
             assert np.allclose(true_cost, cost), 'Cost = {}, tru cost = {}'.format(cost, true_cost)
@@ -396,49 +398,31 @@ class _NDS2SAE:
         saver = tf.train.Saver(max_to_keep=1)
         with tf.Session() as sess:
             # Merge all the summaries and write them out to /tmp/mnist_logs (by default)
-            # summary_merged = tf.summary.merge_all()
-            # train_writer = tf.summary.FileWriter(self.tmp_folder + '/train', graph=sess.graph)
-            # test_writer = tf.summary.FileWriter(self.tmp_folder + '/test')
+            if self.write_summary:
+                summary_merged = tf.summary.merge_all()
+                train_writer = tf.summary.FileWriter(self.tmp_folder + '/train', graph=sess.graph)
+                test_writer = tf.summary.FileWriter(self.tmp_folder + '/test')
             init = tf.global_variables_initializer()
             init.run()
             if not self.build_anew:
                 saver.restore(sess, tf.train.latest_checkpoint(self.tmp_folder))
             current_iteration = self.global_step.eval()
             for iteration in range(current_iteration, n_iterations):
-
-                xs, ys = training_gen(batch_size)
-                X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask\
-                    = self.proprocess_samples(xs, ys)
-
-                actual_start_tokens = np.full((batch_size, self.output_dim), self.go_token, dtype=np.float32)
-                actual_go_tokens = np.full((batch_size, 1, self.output_dim), self.go_token, dtype=np.float32)
-                this_learning_rate = self.learning_rate_func(global_step=iteration)
-
-                # Training step
-                feed_dict = {
-                    self.batch_size: batch_size,
-                    self.learning_rate: this_learning_rate,
-                    self.input_data: X_batch,
-                    self.output_data: y_batch,
-                    self.mask: len_mask,
-                    self.start_tokens: actual_start_tokens,
-                    self.go_tokens: actual_go_tokens,
-                    self.target_sequence_length: target_sequence_lens,
-                    self.source_sequence_length: source_sequence_lens
-                }
-                _, loss, this_learning_rate = sess.run([self.train_op, self.cost, self.learning_rate], feed_dict)
-                # train_writer.add_summary(summary, iteration)
-
-                # Debug message updating us on the status of the training
-                if iteration % display_step == 0 or iteration == n_iterations - 1:
-                    xs, ys = valid_gen(batch_size)
+                final_batch = False
+                current_lr = self.learning_rate_func(global_step=iteration)
+                while not final_batch:
+                    xs, ys, final_batch = training_gen(batch_size)
+                    actual_batch_size = len(xs)
                     X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask\
                         = self.proprocess_samples(xs, ys)
 
-                    # Calculate validation cost
+                    actual_start_tokens = np.full((actual_batch_size, self.output_dim), self.go_token, dtype=np.float32)
+                    actual_go_tokens = np.full((actual_batch_size, 1, self.output_dim), self.go_token, dtype=np.float32)
+
+                    # Training step
                     feed_dict = {
-                        self.batch_size: batch_size,
-                        self.learning_rate: this_learning_rate,
+                        self.batch_size: actual_batch_size,
+                        self.learning_rate: current_lr,
                         self.input_data: X_batch,
                         self.output_data: y_batch,
                         self.mask: len_mask,
@@ -447,11 +431,44 @@ class _NDS2SAE:
                         self.target_sequence_length: target_sequence_lens,
                         self.source_sequence_length: source_sequence_lens
                     }
-                    validation_loss = sess.run(self.cost, feed_dict)
-                    # test_writer.add_summary(summary, iteration)
+
+                    if final_batch and self.write_summary:
+                        _, loss, current_lr, summary = \
+                            sess.run([self.train_op, self.cost, self.learning_rate, summary_merged], feed_dict)
+                        train_writer.add_summary(summary, iteration)
+                    else:
+                        _, loss, current_lr = sess.run([self.train_op, self.cost, self.learning_rate], feed_dict)
+
+                # Debug message updating us on the status of the training
+                if iteration % display_step == 0 or iteration == n_iterations - 1:
+                    xs, ys, _ = valid_gen(batch_size=None)
+                    actual_batch_size = len(xs)
+                    X_batch, y_batch, source_sequence_lens, target_sequence_lens, len_mask\
+                        = self.proprocess_samples(xs, ys)
+                    actual_start_tokens = np.full((actual_batch_size, self.output_dim), self.go_token, dtype=np.float32)
+                    actual_go_tokens = np.full((actual_batch_size, 1, self.output_dim), self.go_token, dtype=np.float32)
+
+                    # Calculate validation cost
+                    feed_dict = {
+                        self.batch_size: actual_batch_size,
+                        self.learning_rate: current_lr,
+                        self.input_data: X_batch,
+                        self.output_data: y_batch,
+                        self.mask: len_mask,
+                        self.start_tokens: actual_start_tokens,
+                        self.go_tokens: actual_go_tokens,
+                        self.target_sequence_length: target_sequence_lens,
+                        self.source_sequence_length: source_sequence_lens
+                    }
+
+                    if self.write_summary:
+                        validation_loss, summary = sess.run([self.cost, summary_merged], feed_dict)
+                        test_writer.add_summary(summary, iteration)
+                    else:
+                        validation_loss = sess.run(self.cost, feed_dict)
 
                     print(('Epoch {:>3}/{} - Loss: {:>6.3f}  - Validation loss: {:>6.3f} - Learning rate: {:>8.7f}'.
-                           format(iteration, n_iterations, loss, validation_loss, this_learning_rate)))
+                           format(iteration, n_iterations, loss, validation_loss, current_lr)))
 
                 if iteration % save_step == 0 or iteration == n_iterations - 1:
                     saver.save(sess, self.saved_session_name, global_step=self.global_step)
@@ -468,8 +485,10 @@ class _NDS2SAE:
     def _predict_or_encode(self, mode, test_seq, session=None):
         if mode == 'predict':
             ops = self.inference_decoder_output
-        else:
+        elif mode == 'encode':
             ops = self.enc_state
+        else:
+            ops = self.enc_state_centre
 
         batch_size = len(test_seq)
         X_batch, source_sequence_lens, target_sequence_lens = self.proprocess_samples(test_seq)
@@ -504,6 +523,10 @@ class _NDS2SAE:
             retval.append(y[:leny])
         return retval
 
-    def encode(self, test_seq, session=None):
-        states = self._predict_or_encode('encode', test_seq, session)
-        return np.concatenate(states, axis=1)
+    def encode(self, test_seq, session=None, kernel_only=False):
+        if kernel_only:
+            states = self._predict_or_encode('encode-centre', test_seq, session)
+            return states
+        else:
+            states = self._predict_or_encode('encode', test_seq, session)
+            return np.concatenate(states, axis=1)
