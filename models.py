@@ -51,9 +51,10 @@ class NDS2SAEFactory:
         self.lrtype = 'constant'
         self.lrargs = dict(lr=0.001)
         self.write_summary = False
+        self.save_to = None
 
-    def load(self, filename):
-        self.load_from = filename
+    def set_output(self, filename):
+        self.save_to = filename
         if os.path.isfile(filename):
             with zipfile.ZipFile(filename, 'r') as zip_file:
                 namelist = zip_file.namelist()
@@ -62,17 +63,12 @@ class NDS2SAEFactory:
                     for k, v in list(meta.items()):
                         if not callable(v):
                             setattr(self, k, v)
-        else:
-            raise Exception('File {} does not exist'.format(filename))
 
-    def build(self, save_to=None):
-        if save_to is None:
-            if hasattr(self, 'load_from'):
-                save_to = self.load_from
-            else:
-                raise Exception('save_to is mandatory if load() has not been called')
+    def build(self):
+        if self.save_to is None:
+            raise Exception('Must call set_output(save_to=...) first')
 
-        assert self.lrtype in lrfunc_classes.keys()
+        assert self.lrtype in list(lrfunc_classes.keys())
 
         if self.uuid_code is None:
             self.uuid_code = uuid4().hex
@@ -84,11 +80,11 @@ class NDS2SAEFactory:
         mkdirp(self.tmp_folder)
 
         build_anew = True
-        if os.path.isfile(save_to):
-            has_saved_checkpoint = extract_saved(self.tmp_folder, save_to)
+        if os.path.isfile(self.save_to):
+            has_saved_checkpoint = extract_saved(self.tmp_folder, self.save_to)
             build_anew = not has_saved_checkpoint
 
-        params = {v: k for v, k in vars(self).items() if not callable(k)}
+        params = {v: k for v, k in list(vars(self).items()) if not callable(k)}
         meta_file = os.path.join(self.tmp_folder, 'meta.json')
         with open(meta_file, 'w') as f:
             json.dump(params, f)
@@ -97,7 +93,7 @@ class NDS2SAEFactory:
 
         retval = _NDS2SAE(self)
         retval.learning_rate_func = lrfunc_class(**self.lrargs).get_lr
-        retval.save_to = save_to
+        retval.save_to = self.save_to
         retval.build_anew = build_anew
         retval.construct()
         return retval
@@ -385,10 +381,13 @@ class _NDS2SAE:
             # Gradient Clipping
             gradients = optimizer.compute_gradients(self.cost)
             capped_gradients = [(tf.clip_by_value(grad, -5., 5.), var) for grad, var in gradients if grad is not None]
-            self.train_op = optimizer.apply_gradients(capped_gradients, global_step=self.global_step)
+            self.train_op = optimizer.apply_gradients(capped_gradients)
+            self.train_op_eob = optimizer.apply_gradients(capped_gradients, global_step=self.global_step)
 
     # @profile
-    def train(self, training_gen, valid_gen, n_iterations=1500, batch_size=50, display_step=1, save_step=100):
+    def train(self, training_gen, valid_gen, n_iterations, batch_size, display_step=100, save_step=None):
+        if save_step is None:
+            save_step = display_step
         self.construct_loss_function()
 
         with tf.name_scope('summaries'):
@@ -432,12 +431,17 @@ class _NDS2SAE:
                         self.source_sequence_length: source_sequence_lens
                     }
 
-                    if final_batch and self.write_summary:
+                    if final_batch:
+                        train_op = self.train_op_eob
+                    else:
+                        train_op = self.train_op
+
+                    if self.write_summary:
                         _, loss, current_lr, summary = \
-                            sess.run([self.train_op, self.cost, self.learning_rate, summary_merged], feed_dict)
+                            sess.run([train_op, self.cost, self.learning_rate, summary_merged], feed_dict)
                         train_writer.add_summary(summary, iteration)
                     else:
-                        _, loss, current_lr = sess.run([self.train_op, self.cost, self.learning_rate], feed_dict)
+                        _, loss, current_lr = sess.run([train_op, self.cost, self.learning_rate], feed_dict)
 
                 # Debug message updating us on the status of the training
                 if iteration % display_step == 0 or iteration == n_iterations - 1:

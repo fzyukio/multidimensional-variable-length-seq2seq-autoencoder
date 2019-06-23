@@ -5,11 +5,14 @@ from matplotlib import pyplot as plt
 
 from models import NDS2SAEFactory
 
+tf.logging.set_verbosity(tf.logging.ERROR)
+
+# This is for profiling purpose, it doesn't mean you must use Python 3
 PY3 = sys.version_info[0] == 3
 if PY3:
     import builtins
 else:
-    import __builtin__ as builtins
+    import builtins as builtins
 
 try:
     builtins.profile
@@ -28,7 +31,8 @@ if __name__ == '__main__':
     x = np.linspace(0, 150, len_x)
     total_start_points = len_x - max_seq_len
 
-    pad_token = 0
+    batch_count = 0
+    variables = {'full_batch': 100, 'remain_batch_size': 100}
 
 
     def generate_samples(time):
@@ -38,6 +42,20 @@ if __name__ == '__main__':
 
 
     def generate_train_samples(batch_size=10):
+        # Since we have an unlimited supply of dummy data, technically we can just return final_batch=True
+        # However to simulate the actual scenario, we fake having 100 examples and the last batch will return True
+        if batch_size is None:
+            batch_size = variables['full_batch']
+            final_batch = True
+        else:
+            if batch_size >= variables['remain_batch_size']:
+                batch_size = variables['remain_batch_size']
+                variables['remain_batch_size'] = variables['full_batch']
+                final_batch = True
+            else:
+                variables['remain_batch_size'] -= batch_size
+                final_batch = False
+
         start_time_idx = np.random.choice(list(range(total_start_points)), batch_size)
         sequence_lens = np.random.choice(list(range(min_seq_len, max_seq_len + 1)), batch_size).astype(np.int32)
 
@@ -49,12 +67,7 @@ if __name__ == '__main__':
             input.append(np.array([sin, cos]).transpose(1, 0))
             output.append(np.array([sin + cos]).transpose(1, 0))
 
-        return input, output, True
-
-
-    def adjust_length(seqs, lens):
-        for seg, len in zip(seqs, lens):
-            seg[len:] = 0
+        return input, output, final_batch
 
 
     def show_test():
@@ -64,9 +77,8 @@ if __name__ == '__main__':
         seq_len = len(test_seq[0])
         pre_len = len(predicted[0])
 
-        # adjust_length(predicted, test_seq_len)
-
-        plt.title("Input sequence, predicted and true output sequences")
+        plt.title("""Input sequence, predicted and true output sequences
+        The red dots near 0 of the predicted sequence signify the End Of Sequence""")
         i = plt.plot(list(range(seq_len)), test_seq[0], 'o', label='true input sequence')
         p = plt.plot(list(range(seq_len, seq_len + pre_len)), predicted[0], 'ro', label='predicted outputs')
         t = plt.plot(list(range(seq_len, seq_len + seq_len)), test_res[0], 'co', alpha=0.6, label='true outputs')
@@ -90,24 +102,23 @@ if __name__ == '__main__':
         print(encoded)
 
 
-    # def show_sample():
-    #     test_seq, test_res, test_seq_len, test_mask = generate_train_samples(batch_size=1)
-    #
-    #     adjust_length(test_seq, test_seq_len)
-    #     adjust_length(test_res, test_seq_len)
-    #
-    #     plt.title("Input sequence, predicted and true output sequences")
-    #     i = plt.plot(range(max_seq_len), test_seq[0], 'o', label='true input sequence')
-    #     t = plt.plot(range(max_seq_len, max_seq_len + max_seq_len), test_res[0], 'co', alpha=0.6, label='true outputs')
-    #
-    #     plt.legend(handles=[i[0], t[0]], loc='upper left')
-    #     plt.show()
-    #
-    # show_sample()
+    def show_sample():
+        test_seq, test_res, _ = generate_train_samples(batch_size=1)
+        seq_len = len(test_seq[0])
 
-    n_iterations = 4000
+        plt.title("Random input sequences (sin and cos) and true output sequence (sum of sin and cos) (no padding yet)")
+        i = plt.plot(range(seq_len), test_seq[0], 'o', label='true input sequence')
+        t = plt.plot(range(seq_len, seq_len + seq_len), test_res[0], 'co', alpha=0.6, label='true outputs')
+
+        plt.legend(handles=[i[0], t[0]], loc='upper left')
+        plt.show()
+
+    show_sample()
+
+    n_iterations = 600
 
     factory = NDS2SAEFactory()
+    factory.set_output('toy.zip')
     factory.lrtype = 'expdecay'
     factory.lrargs = dict(start_lr=0.02, finish_lr=0.00001, decay_steps=n_iterations)
     # factory.lrtype = 'constant'
@@ -116,19 +127,19 @@ if __name__ == '__main__':
     factory.input_dim = n_inputs
     factory.output_dim = n_outputs
     factory.layer_sizes = [50, 30]
-    encoder = factory.build('toy.zip')
+    encoder = factory.build()
 
     # If toy.zip exists, the encoder will continue the training
     # Otherwise it'll train a new model and save to toy.zip every {display_step}
-    # encoder.train(generate_train_samples, generate_train_samples, n_iterations=n_iterations,
-    #               batch_size=100, display_step=100, save_step=1000)
+    encoder.train(generate_train_samples, generate_train_samples, n_iterations=n_iterations,
+                  batch_size=30, display_step=100, save_step=1000)
 
     # Turn on for debug.
     # debug()
 
     # Run this to use the trained autoencoder to encode and decode a randomly generated sequence
     # And display them
-    # show_test()
+    show_test()
 
     # This will print out the encoded (hidden layers) value
     run_encode()

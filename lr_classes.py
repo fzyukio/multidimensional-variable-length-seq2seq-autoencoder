@@ -1,7 +1,11 @@
+"""
+Learning rate functions.
+Define your own here if necessary. But don't go too crazy. In most cases even constant rate is suffice
+"""
 from abc import abstractmethod
 
 
-class LRFunc:
+class LRFunc(object):
     @abstractmethod
     def __init__(self, *args, **kwargs):
         pass
@@ -22,7 +26,7 @@ class LRFuncConstant(LRFunc):
 
 class LRFuncExpDecay(LRFunc):
     def __init__(self, start_lr, finish_lr, decay_steps, *args, **kwargs):
-        assert 0 < finish_lr < start_lr, "start_lr must be > finish_lr and both must be positive"
+        assert 0 < finish_lr <= start_lr, "start_lr must be >= finish_lr and both must be positive"
         assert decay_steps > 0, "decay_steps must be positive"
 
         self.starter_learning_rate = start_lr
