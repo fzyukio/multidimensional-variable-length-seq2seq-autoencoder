@@ -14,7 +14,7 @@ setuptools.setup(
     url="https://github.com/fzyukio/multidimensional-variable-length-seq2seq-autoencoder",
     packages=setuptools.find_packages(),
     license='MIT',
-    install_requires=['numpy==1.16.3', 'tensorflow==1.13.1'],
+    install_requires=['numpy==1.16.3', 'tensorflow==2.7.2'],
     classifiers=[
         "Programming Language :: Python",
         "License :: OSI Approved :: MIT License",
